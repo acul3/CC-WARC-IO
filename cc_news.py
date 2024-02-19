@@ -8,9 +8,13 @@ import time
 from multiprocessing import Pool
 import logging
 from pathlib import Path
+import argparse
+parser = argparse.ArgumentParser(description='Process WARC files from Common Crawl.')
+parser.add_argument('--data-root', default='/home/acul/data_nvme6/cc_news/', help='Root directory for data storage')
+args = parser.parse_args()
 
 # Configuration
-DATA_ROOT = "/home/acul/data_nvme6/cc_news/"
+DATA_ROOT = Path(args.data_root)
 FASTTEXT_MODEL_PATH = 'lid.176.bin'
 WARC_FILE_LIST = Path(DATA_ROOT) / 'warc.txt'
 UNSUCCESSFUL_DOWNLOADS_FILE = Path(DATA_ROOT) / 'unsucess_2.txt'
