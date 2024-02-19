@@ -9,18 +9,20 @@ from multiprocessing import Pool
 import logging
 from pathlib import Path
 import argparse
-parser = argparse.ArgumentParser(description='Process WARC files from Common Crawl.')
-parser.add_argument('--data-root', default='/home/acul/data_nvme6/cc_news/', help='Root directory for data storage')
-args = parser.parse_args()
+import os
+
+# Load environment variables
+load_dotenv()
 
 # Configuration
-DATA_ROOT = Path(args.data_root)
-FASTTEXT_MODEL_PATH = 'lid.176.bin'
-WARC_FILE_LIST = Path(DATA_ROOT) / 'warc.txt'
-UNSUCCESSFUL_DOWNLOADS_FILE = Path(DATA_ROOT) / 'unsucess_2.txt'
-NO_ID_FILE = Path(DATA_ROOT) / 'no_id.txt'
-LANGUAGE_TARGET = 'id'
-NUM_WORKERS = 10
+DATA_ROOT = os.getenv('DATA_ROOT', "/home/acul/data_nvme6/cc_news/")
+FASTTEXT_MODEL_PATH = os.getenv('FASTTEXT_MODEL_PATH', 'lid.176.bin')
+WARC_FILE_LIST = os.path.join(DATA_ROOT, 'warc.txt')
+UNSUCCESSFUL_DOWNLOADS_FILE = os.path.join(DATA_ROOT, 'unsucess_2.txt')
+NO_ID_FILE = os.path.join(DATA_ROOT, 'no_id.txt')
+LANGUAGE_TARGET = os.getenv('LANGUAGE_TARGET', 'id')
+NUM_WORKERS = int(os.getenv('NUM_WORKERS', 10))
+
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
