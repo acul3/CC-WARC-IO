@@ -5,112 +5,104 @@ from warcio.archiveiterator import ArchiveIterator
 import trafilatura
 import fasttext
 import time
-from multiprocessing import Pool, cpu_count
-from requests.exceptions import HTTPError
-from tqdm import tqdm
-root = "/home/acul/data_nvme6/cc_news/"
-# Function to download a file from a URL
-def download_file(url, filename):
-    print(f"downloading {filename}")
-    number_of_retries = 5
-    delay = 60  # delay in seconds (1 minute)
+from multiprocessing import Pool
+import logging
+from pathlib import Path
 
-    for i in range(number_of_retries):
-        
-        try:
-            r = requests.get(url)
-        except requests.exceptions.RequestException as e:
-            print(f"An error occurred while downloading file from {url}: {e}")
-        
-        if r.status_code == 200:
-            with open(filename, "wb") as f:
-                f.write(r.content)
-            break  # Exit the loop if the download is successful
-
-        else:
-            print(f"Error downloading, status code: {r.status_code}")
-            if i < number_of_retries - 1:  # Hold off the wait for the last attempt
-                print(f"Retrying in {delay} seconds...")
-                time.sleep(delay)  # Wait for a certain amount of time before reattempting
-                delay += 60  # Increase the delay for the next attempt
-            else:
-                print(f"Failed to download the file after {number_of_retries} attempts.")
-                with open("unsucess_2.txt", "a") as f:
-                    f.write(url + "\n")
-
+# Configuration
+DATA_ROOT = "/home/acul/data_nvme6/cc_news/"
 FASTTEXT_MODEL_PATH = 'lid.176.bin'
+WARC_FILE_LIST = Path(DATA_ROOT) / 'warc.txt'
+UNSUCCESSFUL_DOWNLOADS_FILE = Path(DATA_ROOT) / 'unsucess_2.txt'
+NO_ID_FILE = Path(DATA_ROOT) / 'no_id.txt'
+LANGUAGE_TARGET = 'id'
+NUM_WORKERS = 10
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Load fastText model for language detection
 model = fasttext.load_model(FASTTEXT_MODEL_PATH)
 
-def process_warc_url(warc_url):
-    # Step 1: Download WARC file
-    if warc_url.startswith("crawl-data"):
-        warc_url = "https://data.commoncrawl.org/" + warc_url
-    warc_filename = warc_url.split('/')[-1]
+def download_file(url, filepath):
+    logging.info(f"Downloading {filepath}")
+    number_of_retries = 5
+    delay = 60  # delay in seconds
 
-    # Initialize JSONL data
-    jsonl_data = []
-    jsonl_filename = warc_filename.replace('.warc.gz', '.jsonl')
+    for attempt in range(number_of_retries):
+        try:
+            response = requests.get(url)
+            response.raise_for_status()  # Raise an HTTPError for bad responses
+            with open(filepath, "wb") as file:
+                file.write(response.content)
+            return True
+        except requests.exceptions.HTTPError as e:
+            logging.error(f"HTTP Error for {url}: {e}")
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Request exception for {url}: {e}")
 
-    if not os.path.exists(f"{root}{jsonl_filename}"):
-        print(f"file not exist {root}{jsonl_filename}")
-        download_file(warc_url, warc_filename)
-        if os.path.exists(f"{root}{warc_filename}"):
-        # Step 2: Read using warcio
-            try:
-                with open(warc_filename, 'rb') as stream:
-                    for record in ArchiveIterator(stream):
-                        if record.rec_type == 'response':
-                            # Step 3: Extract content using trafilatura
-                            try:
-                                content = trafilatura.extract(record.content_stream().read())
-                            except Exception as e:
-                                print(f"trafilatura failed: {e}")
-                                content = None
-
-                            # Step 4: Detect language of the content using fastText
-                            if content:
-                                try:
-                                    lang_predictions = model.predict(content.replace("\n",""))
-                                    lang = lang_predictions[0][0].replace('__label__', '')
-                                except Exception as e:
-                                    print(f"FastText prediction failed: {e}")
-                                    lang = "none"
-
-                                # Step 5: Check if language is Indonesian
-                                if lang == 'id':
-                                    # Step 6: Create a dictionary from data
-                                    url = record.rec_headers.get_header('WARC-Target-URI')
-                                    jsonl_data.append({
-                                        'text': content,
-                                        'url': url,
-                                    })
-            except Exception as e:
-                with open("unsucess_2.txt", 'a') as f:
-                    f.write(warc_url + "\n")
-                print(f"An error occurred while reading WARC for file {warc_url}: {e}")
-                return
-
-    # Step 7: Save data with JSONL under the same name
-        if jsonl_data:
-            with open(jsonl_filename, 'w') as f:
-                for entry in jsonl_data:
-                    f.write(json.dumps(entry) + '\n')
+        if attempt < number_of_retries - 1:
+            logging.info(f"Retrying in {delay} seconds...")
+            time.sleep(delay)
+            delay += 60
         else:
-            with open("no_id.txt", 'a') as f:
-                    f.write(warc_url + "\n")
+            logging.error(f"Failed to download {url} after {number_of_retries} attempts.")
+            with open(UNSUCCESSFUL_DOWNLOADS_FILE, "a") as file:
+                file.write(url + "\n")
+            return False
 
-    # Step 8: Remove WARC file if finished
-    if os.path.exists(warc_filename):
-        os.remove(warc_filename)
+def process_warc_file(warc_path, output_path):
+    jsonl_data = []
+    try:
+        with open(warc_path, 'rb') as stream:
+            for record in ArchiveIterator(stream):
+                if record.rec_type == 'response':
+                    try:
+                        content = trafilatura.extract(record.content_stream().read())
+                        if content:
+                            lang_predictions = model.predict(content.replace("\n", ""))
+                            lang = lang_predictions[0][0].replace('__label__', '')
+                            if lang == LANGUAGE_TARGET:
+                                url = record.rec_headers.get_header('WARC-Target-URI')
+                                jsonl_data.append({
+                                    'text': content,
+                                    'url': url,
+                                })
+                    except Exception as e:
+                        logging.error(f"Error processing record: {e}")
+    except Exception as e:
+        logging.error(f"Error reading WARC file {warc_path}: {e}")
+        with open(UNSUCCESSFUL_DOWNLOADS_FILE, 'a') as file:
+            file.write(str(warc_path) + "\n")
 
-# List of WARC URLs to download
-with open('/home/acul/data_nvme6/cc_news/warc.txt', 'r') as f:
-    warc_urls = [line.strip() for line in f.readlines()]
+    if jsonl_data:
+        with open(output_path, 'w') as file:
+            for entry in jsonl_data:
+                file.write(json.dumps(entry) + '\n')
+    else:
+        with open(NO_ID_FILE, 'a') as file:
+            file.write(str(warc_path) + "\n")
 
-# Initialize multiprocessing pool
-num_workers = 10
-with Pool(num_workers) as pool:
-    for _ in tqdm(pool.imap_unordered(process_warc_url, warc_urls), total=len(warc_urls)):
-        pass
+def process_warc_url(warc_url):
+    if warc_url.startswith("crawl-data"):
+        warc_url = f"https://data.commoncrawl.org/{warc_url}"
+    warc_filename = Path(warc_url.split('/')[-1])
+    jsonl_filename = warc_filename.with_suffix('.jsonl')
+
+    warc_path = Path(DATA_ROOT) / warc_filename
+    jsonl_path = Path(DATA_ROOT) / jsonl_filename
+
+    if not jsonl_path.exists():
+        if download_file(warc_url, warc_path):
+            process_warc_file(warc_path, jsonl_path)
+            warc_path.unlink()  # Remove WARC file after processing
+
+def main():
+    with open(WARC_FILE_LIST, 'r') as file:
+        warc_urls = [line.strip() for line in file.readlines()]
+
+    with Pool(NUM_WORKERS) as pool:
+        pool.map(process_warc_url, warc_urls)
+
+if __name__ == "__main__":
+    main()
